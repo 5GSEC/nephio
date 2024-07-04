@@ -17,21 +17,23 @@ limitations under the License.
 package bootstrapsecret
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"os"
-	"time"
+	"io/ioutil"
+	"strings"
 
 	reconcilerinterface "github.com/nephio-project/nephio/controllers/pkg/reconcilers/reconciler-interface"
-	"github.com/spiffe/go-spiffe/v2/spiffeid"
-	"github.com/spiffe/go-spiffe/v2/spiffetls/tlsconfig"
-	"github.com/spiffe/go-spiffe/v2/svid/jwtsvid"
 	"github.com/spiffe/go-spiffe/v2/workloadapi"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 
+	vault "github.com/hashicorp/vault/api"
+	"github.com/spiffe/go-spiffe/v2/spiffeid"
+	"github.com/spiffe/go-spiffe/v2/svid/jwtsvid"
+
+	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
 	capiv1beta1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -42,16 +44,19 @@ import (
 )
 
 func init() {
-	reconcilerinterface.Register("WorkloadIdentity", &reconciler{})
+	reconcilerinterface.Register("workloadidentity", &reconciler{})
 }
 
-// const (
-// 	clusterNameKey     = "nephio.org/cluster-name"
-// 	nephioAppKey       = "nephio.org/app"
-// 	remoteNamespaceKey = "nephio.org/remote-namespace"
-// 	syncApp            = "tobeinstalledonremotecluster"
-// 	bootstrapApp       = "bootstrap"
-// )
+type LoginPayload struct {
+	Role string `json:"role"`
+	JWT  string `json:"jwt"`
+}
+
+type AuthResponse struct {
+	Auth struct {
+		ClientToken string `json:"client_token"`
+	} `json:"auth"`
+}
 
 //+kubebuilder:rbac:groups=cluster.x-k8s.io,resources=clusters,verbs=get;list;watch
 //+kubebuilder:rbac:groups=cluster.x-k8s.io,resources=clusters/status,verbs=get
@@ -106,12 +111,12 @@ func (r *reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return reconcile.Result{}, err
 	}
 
-	// secrets := &corev1.SecretList{}
-	// if err := r.List(ctx, secrets); err != nil {
-	// 	msg := "cannot list secrets"
-	// 	log.Error(err, msg)
-	// 	return ctrl.Result{}, errors.Wrap(err, msg)
-	// }
+	secrets := &corev1.SecretList{}
+	if err := r.List(ctx, secrets); err != nil {
+		msg := "cannot list secrets"
+		log.Error(err, msg)
+		return ctrl.Result{}, errors.Wrap(err, msg)
+	}
 
 	// found := false
 	// for _, secret := range secrets.Items {
@@ -167,87 +172,169 @@ func (r *reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	// 	}
 	// }
 
-	// // Example: Update the status if necessary
+	vaultAddr := "http://10.146.0.21:8200"
 
-	err = run(ctx)
+	jwtSVID, err := getJWT(ctx)
 	if err != nil {
-		log.Error(err, "Spire auth didnt work")
+		log.Error(err, "Unable to get jwtSVID")
 	}
+
+	clientToken, err := authenticateToVault(vaultAddr, jwtSVID.Marshal(), "dev")
+	if err != nil {
+		log.Error(err, "Error authenticating to Vault:")
+	}
+
+	fmt.Printf("Successfully authenticated to Vault. Client token: %s\n", clientToken)
+
+	config := vault.DefaultConfig()
+	config.Address = vaultAddr
+	client, err := vault.NewClient(config)
+	if err != nil {
+		log.Error(err, "Unable to create Vault client:")
+	}
+
+	client.SetToken(clientToken)
+
+	for _, secret := range secrets.Items {
+		if strings.Contains(secret.GetName(), cl.Name) {
+			secret := secret
+			storeKubeconfig(secret, client, "secret/my-super-secret", cl.Name)
+			// clusterClient, ok := cluster.Cluster{Client: r.Client}.GetClusterClient(&secret)
+		}
+	}
+
+	// secret, err := getSecret(client, "secret/my-super-secret")
+
+	kubeconfig, err := fetchKubeconfig(client, "secret/my-super-secret", cl.Name)
+	if err != nil {
+		log.Error(err, "Error retrieving secret:")
+	}
+
+	fmt.Printf("Secret retrieved: %v\n", kubeconfig)
 
 	return reconcile.Result{}, nil
 }
 
-const (
-	serverURL  = "spire-server:8081"
-	socketPath = "unix:///spiffe-workload-api/agent.sock"
-)
-
-func run(ctx context.Context) error {
-	// Time out the example after 30 seconds. This prevents the example from hanging if the workloads are not properly registered with SPIRE.
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	// Create client options to setup expected socket path,
-	// as default sources will use value from environment variable `SPIFFE_ENDPOINT_SOCKET`
+func getJWT(ctx context.Context) (*jwtsvid.SVID, error) {
+	socketPath := "unix:///spiffe-workload-api/agent.sock"
+	log := log.FromContext(ctx)
 	clientOptions := workloadapi.WithClientOptions(workloadapi.WithAddr(socketPath))
-
-	// Create X509 source to fetch bundle certificate used to verify presented certificate from server
-	x509Source, err := workloadapi.NewX509Source(ctx, clientOptions)
-	if err != nil {
-		return fmt.Errorf("unable to create X509Source: %w", err)
-	}
-	defer x509Source.Close()
-
-	// Create a `tls.Config` with configuration to allow TLS communication, and verify that presented certificate from server has SPIFFE ID `spiffe://example.org/server`
-	serverID := spiffeid.RequireFromString("spiffe://example.org/server")
-	tlsConfig := tlsconfig.TLSClientConfig(x509Source, tlsconfig.AuthorizeID(serverID))
-
-	client := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: tlsConfig,
-		},
-	}
-
-	req, err := http.NewRequest("GET", serverURL, nil)
-	if err != nil {
-		return fmt.Errorf("unable to create request: %w", err)
-	}
-
-	// As default example is using server's ID,
-	// It doesn't have to be an SPIFFE ID as long it follows JWT SVIDs the guidelines (https://github.com/spiffe/spiffe/blob/main/standards/JWT-SVID.md#32-audience)
-	audience := serverID.String()
-	args := os.Args
-	if len(args) >= 2 {
-		audience = args[1]
-	}
-
-	// Create a JWTSource to fetch SVIDs
 	jwtSource, err := workloadapi.NewJWTSource(ctx, clientOptions)
 	if err != nil {
-		return fmt.Errorf("unable to create JWTSource: %w", err)
+		log.Info("Unable to create JWTSource: %v", err)
 	}
 	defer jwtSource.Close()
 
-	// Fetch JWT SVID and add it to `Authorization` header,
-	// It is possible to fetch JWT SVID using `workloadapi.FetchJWTSVID`
-	svid, err := jwtSource.FetchJWTSVID(ctx, jwtsvid.Params{
+	audience := "TESTING"
+	spiffeID := spiffeid.RequireFromString("spiffe://example.org/nephio")
+
+	jwtSVID, err := jwtSource.FetchJWTSVID(ctx, jwtsvid.Params{
 		Audience: audience,
+		Subject:  spiffeID,
 	})
 	if err != nil {
-		return fmt.Errorf("unable to fetch SVID: %w", err)
+		log.Info("Unable to fetch JWT-SVID: %v", err)
 	}
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", svid.Marshal()))
 
-	res, err := client.Do(req)
+	fmt.Printf("Fetched JWT-SVID: %v\n", jwtSVID.Marshal())
 	if err != nil {
-		return fmt.Errorf("unable to issue request to %q: %w", serverURL, err)
+		log.Error(err, "Spire auth didnt work")
 	}
-	defer res.Body.Close()
 
-	body, err := io.ReadAll(res.Body)
+	return jwtSVID, err
+}
+
+func authenticateToVault(vaultAddr, jwt, role string) (string, error) {
+	// Create a Vault client
+	config := vault.DefaultConfig()
+	config.Address = vaultAddr
+	client, err := vault.NewClient(config)
 	if err != nil {
-		return fmt.Errorf("error reading response body: %w", err)
+		return "", fmt.Errorf("unable to create Vault client: %w", err)
 	}
-	log.Log.Info("%s", body)
+
+	payload := LoginPayload{
+		Role: role,
+		JWT:  jwt,
+	}
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("unable to marshal payload: %w", err)
+	}
+
+	// Perform the login request
+	req := client.NewRequest("POST", "/v1/auth/jwt/login")
+	req.Body = bytes.NewBuffer(payloadBytes)
+
+	resp, err := client.RawRequest(req)
+	if err != nil {
+		return "", fmt.Errorf("unable to perform login request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("unable to read response body: %w", err)
+	}
+
+	var authResp AuthResponse
+	if err := json.Unmarshal(body, &authResp); err != nil {
+		return "", fmt.Errorf("unable to decode response: %w", err)
+	}
+
+	return authResp.Auth.ClientToken, nil
+}
+
+func getSecret(client *vault.Client, secretPath string) (map[string]interface{}, error) {
+	secret, err := client.Logical().Read(secretPath)
+	if err != nil {
+		return nil, fmt.Errorf("unable to read secret: %w", err)
+	}
+
+	if secret == nil {
+		return nil, fmt.Errorf("secret not found at path: %s", secretPath)
+	}
+
+	return secret.Data, nil
+}
+
+func storeKubeconfig(kubeconfigData corev1.Secret, client *vault.Client, secretPath, clusterName string) error {
+	// Read the Kubeconfig file
+
+	fmt.Println("Base64 encoded secret data:", kubeconfigData.Data)
+
+	// Prepare the data to store
+	data := map[string]interface{}{
+		"data": map[string]interface{}{
+			clusterName: kubeconfigData.Data,
+		},
+	}
+
+	// Store the data in Vault
+	_, err := client.Logical().Write(secretPath, data)
+	if err != nil {
+		return fmt.Errorf("unable to write secret to Vault: %w", err)
+	}
+
 	return nil
+}
+
+func fetchKubeconfig(client *vault.Client, secretPath, clusterName string) (string, error) {
+	// Read the secret
+	secret, err := client.Logical().Read(secretPath)
+	if err != nil {
+		return "", fmt.Errorf("unable to read secret: %w", err)
+	}
+
+	if secret == nil {
+		return "", fmt.Errorf("secret not found at path: %s", secretPath)
+	}
+
+	// Extract the Kubeconfig data
+	kubeconfig, ok := secret.Data["data"].(map[string]interface{})[clusterName].(string)
+	if !ok {
+		return "", fmt.Errorf("kubeconfig for cluster %s not found", clusterName)
+	}
+
+	return kubeconfig, nil
 }

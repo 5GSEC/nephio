@@ -331,7 +331,7 @@ func fetchKubeconfig(client *vault.Client, secretPath, clusterName string) (stri
 	}
 
 	// Extract the Kubeconfig data
-	kubeconfig, ok := secret.Data["data"].(map[string]interface{})[clusterName].(string)
+	kubeconfig, ok := secret.Data["test"].(string)
 	if !ok {
 		return "", fmt.Errorf("kubeconfig for cluster %s not found", clusterName)
 	}

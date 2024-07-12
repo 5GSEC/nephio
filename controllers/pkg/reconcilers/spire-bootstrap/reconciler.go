@@ -14,33 +14,27 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package bootstrapsecret
+package spirebootstrap
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"strings"
 	"time"
 
 	"github.com/nephio-project/nephio/controllers/pkg/cluster"
 	reconcilerinterface "github.com/nephio-project/nephio/controllers/pkg/reconcilers/reconciler-interface"
 	"github.com/nephio-project/nephio/controllers/pkg/resource"
-	"github.com/spiffe/go-spiffe/v2/workloadapi"
+	vaultClient "github.com/nephio-project/nephio/controllers/pkg/vault-client"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 
 	vault "github.com/hashicorp/vault/api"
-	"github.com/spiffe/go-spiffe/v2/spiffeid"
-	"github.com/spiffe/go-spiffe/v2/svid/jwtsvid"
 
 	"github.com/pkg/errors"
-	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -110,36 +104,47 @@ func (r *reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 	// Add your reconciliation logic here
 	log.Info("Reconciling Cluster", "cluster", cl.Name)
+	fmt.Println("TESTTT !!!!!!!!!")
 
 	// Fetch the ConfigMap from the current cluster
 	configMapName := types.NamespacedName{Name: "spire-bundle", Namespace: "spire"}
-	configMap := &corev1.ConfigMap{}
+	configMap := &v1.ConfigMap{}
 	err = r.Get(ctx, configMapName, configMap)
 	if err != nil {
 		log.Error(err, "unable to fetch ConfigMap")
 		return reconcile.Result{}, err
 	}
 
-	secrets := &corev1.SecretList{}
+	fmt.Println("TESTTT @@@@@@")
+
+	secrets := &v1.SecretList{}
 	if err := r.List(ctx, secrets); err != nil {
 		msg := "cannot list secrets"
 		log.Error(err, msg)
 		return ctrl.Result{}, errors.Wrap(err, msg)
 	}
 
+	fmt.Println("TESTTT 3333333")
+
 	vaultAddr := "http://10.146.0.21:8200"
 
-	jwtSVID, err := getJWT(ctx)
+	jwtSVID, err := resource.GetJWT(ctx)
 	if err != nil {
 		log.Error(err, "Unable to get jwtSVID")
 	}
 
-	clientToken, err := authenticateToVault(vaultAddr, jwtSVID.Marshal(), "dev")
+	fmt.Println("TESTTT 4444444")
+
+	clientToken, err := vaultClient.AuthenticateToVault(vaultAddr, jwtSVID.Marshal(), "dev")
 	if err != nil {
 		log.Error(err, "Error authenticating to Vault:")
 	}
 
-	fmt.Printf("Successfully authenticated to Vault. Client token: %s\n", clientToken)
+	fmt.Println("TESTTT 5555555")
+
+	log.Info("Successfully authenticated to Vault.", "Client token:", clientToken)
+
+	fmt.Println(clientToken)
 
 	config := vault.DefaultConfig()
 	config.Address = vaultAddr
@@ -153,14 +158,14 @@ func (r *reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	for _, secret := range secrets.Items {
 		if strings.Contains(secret.GetName(), cl.Name) {
 			secret := secret
-			storeKubeconfig(secret, client, "secret/my-super-secret", cl.Name)
+			vaultClient.StoreKubeconfig(secret, client, "secret/my-super-secret", cl.Name)
 			// clusterClient, ok := cluster.Cluster{Client: r.Client}.GetClusterClient(&secret)
 		}
 	}
 
 	// secret, err := getSecret(client, "secret/my-super-secret")
 
-	kubeconfig, err := fetchKubeconfig(client, "secret/my-super-secret", cl.Name)
+	kubeconfig, err := vaultClient.FetchKubeconfig(client, "secret/my-super-secret", cl.Name)
 	if err != nil {
 		log.Error(err, "Error retrieving secret:")
 	}
@@ -170,22 +175,21 @@ func (r *reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		fmt.Println("Error decoding base64:", err)
 	}
 
-	fmt.Printf("Secret retrieved: %v\n", decodedKubeConfig)
+	log.Info("Secret retrieved:", "Secret", decodedKubeConfig)
 
 	Client, err := createK8sClientFromKubeconfig(decodedKubeConfig)
 
-	createK8sResources(Client)
+	createK8sSATokenResources(Client)
+
 	if err != nil {
 		fmt.Println("Error creating K8s", err)
 	}
 
-	found := false
 	for _, secret := range secrets.Items {
 		if strings.Contains(secret.GetName(), cl.Name) {
 			secret := secret // required to prevent gosec warning: G601 (CWE-118): Implicit memory aliasing in for loop
 			clusterClient, ok := cluster.Cluster{Client: r.Client}.GetClusterClient(&secret)
 			if ok {
-				found = true
 				clusterClient, ready, err := clusterClient.GetClusterClient(ctx)
 				if err != nil {
 					msg := "cannot get clusterClient"
@@ -202,7 +206,7 @@ func (r *reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 				// 	remoteNamespace = rns
 				// }
 				// check if the remote namespace exists, if not retry
-				ns := &corev1.Namespace{}
+				ns := &v1.Namespace{}
 				if err = clusterClient.Get(ctx, types.NamespacedName{Name: remoteNamespace}, ns); err != nil {
 					if resource.IgnoreNotFound(err) != nil {
 						msg := fmt.Sprintf("cannot get namespace: %s", remoteNamespace)
@@ -227,15 +231,13 @@ func (r *reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 				}
 			}
 		}
-		if found {
-			// speeds up the loop
-			break
-		}
+
 	}
 
 	return reconcile.Result{}, nil
 }
 
+// unused for now
 func createK8sClientFromKubeconfig(kubeconfigData []byte) (*kubernetes.Clientset, error) {
 	// Load the kubeconfig from the decoded data
 	config, err := clientcmd.RESTConfigFromKubeConfig(kubeconfigData)
@@ -252,116 +254,8 @@ func createK8sClientFromKubeconfig(kubeconfigData []byte) (*kubernetes.Clientset
 	return clientset, nil
 }
 
-func getJWT(ctx context.Context) (*jwtsvid.SVID, error) {
-	socketPath := "unix:///spiffe-workload-api/agent.sock"
-	log := log.FromContext(ctx)
-	clientOptions := workloadapi.WithClientOptions(workloadapi.WithAddr(socketPath))
-	jwtSource, err := workloadapi.NewJWTSource(ctx, clientOptions)
-	if err != nil {
-		log.Info("Unable to create JWTSource: %v", err)
-	}
-	defer jwtSource.Close()
-
-	audience := "TESTING"
-	spiffeID := spiffeid.RequireFromString("spiffe://example.org/nephio")
-
-	jwtSVID, err := jwtSource.FetchJWTSVID(ctx, jwtsvid.Params{
-		Audience: audience,
-		Subject:  spiffeID,
-	})
-	if err != nil {
-		log.Info("Unable to fetch JWT-SVID: %v", err)
-	}
-
-	fmt.Printf("Fetched JWT-SVID: %v\n", jwtSVID.Marshal())
-	if err != nil {
-		log.Error(err, "Spire auth didnt work")
-	}
-
-	return jwtSVID, err
-}
-
-func authenticateToVault(vaultAddr, jwt, role string) (string, error) {
-	// Create a Vault client
-	config := vault.DefaultConfig()
-	config.Address = vaultAddr
-	client, err := vault.NewClient(config)
-	if err != nil {
-		return "", fmt.Errorf("unable to create Vault client: %w", err)
-	}
-
-	payload := LoginPayload{
-		Role: role,
-		JWT:  jwt,
-	}
-	payloadBytes, err := json.Marshal(payload)
-	if err != nil {
-		return "", fmt.Errorf("unable to marshal payload: %w", err)
-	}
-
-	// Perform the login request
-	req := client.NewRequest("POST", "/v1/auth/jwt/login")
-	req.Body = bytes.NewBuffer(payloadBytes)
-
-	resp, err := client.RawRequest(req)
-	if err != nil {
-		return "", fmt.Errorf("unable to perform login request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("unable to read response body: %w", err)
-	}
-
-	var authResp AuthResponse
-	if err := json.Unmarshal(body, &authResp); err != nil {
-		return "", fmt.Errorf("unable to decode response: %w", err)
-	}
-
-	return authResp.Auth.ClientToken, nil
-}
-
-func storeKubeconfig(kubeconfigData corev1.Secret, client *vault.Client, secretPath, clusterName string) error {
-	// Read the Kubeconfig file
-
-	// Prepare the data to store
-	data := map[string]interface{}{
-		"data": map[string]interface{}{
-			clusterName: kubeconfigData.Data,
-		},
-	}
-
-	// Store the data in Vault
-	_, err := client.Logical().Write(secretPath, data)
-	if err != nil {
-		return fmt.Errorf("unable to write secret to Vault: %w", err)
-	}
-
-	return nil
-}
-
-func fetchKubeconfig(client *vault.Client, secretPath, clusterName string) (string, error) {
-	// Read the secret
-	secret, err := client.Logical().Read(secretPath)
-	if err != nil {
-		return "", fmt.Errorf("unable to read secret: %w", err)
-	}
-
-	if secret == nil {
-		return "", fmt.Errorf("secret not found at path: %s", secretPath)
-	}
-
-	// Extract the Kubeconfig data
-	kubeconfig, ok := secret.Data["test"].(string)
-	if !ok {
-		return "", fmt.Errorf("kubeconfig for cluster %s not found", clusterName)
-	}
-
-	return kubeconfig, nil
-}
-
-func createK8sResources(clientset *kubernetes.Clientset) error {
+// unused for now
+func createK8sSATokenResources(clientset *kubernetes.Clientset) error {
 	// Create ServiceAccount
 	sa := &v1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{

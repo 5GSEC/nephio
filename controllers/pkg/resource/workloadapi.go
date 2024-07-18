@@ -13,7 +13,7 @@ import (
 )
 
 func GetJWT(ctx context.Context) (*jwtsvid.SVID, error) {
-	socketPath := "unix:///spiffe-workload-api/agent.sock"
+	socketPath := "unix:///spiffe-workload-api/spire-agent.sock"
 	log := log.FromContext(ctx)
 	clientOptions := workloadapi.WithClientOptions(workloadapi.WithAddr(socketPath))
 	jwtSource, err := workloadapi.NewJWTSource(ctx, clientOptions)
@@ -39,4 +39,22 @@ func GetJWT(ctx context.Context) (*jwtsvid.SVID, error) {
 	}
 
 	return jwtSVID, err
+}
+
+type Watcher struct{}
+
+func (Watcher) OnX509ContextUpdate(x509Context *workloadapi.X509Context) {
+	fmt.Println("Update:")
+	fmt.Println("  SVIDs:")
+	for _, svid := range x509Context.SVIDs {
+		fmt.Printf("    %s\n", svid.ID)
+	}
+	fmt.Println("  Bundles:")
+	for _, bundle := range x509Context.Bundles.Bundles() {
+		fmt.Printf("    %s (%d authorities)\n", bundle.TrustDomain(), len(bundle.X509Authorities()))
+	}
+}
+
+func (Watcher) OnX509ContextWatchError(err error) {
+	fmt.Println("Error:", err)
 }

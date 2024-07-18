@@ -135,6 +135,18 @@ func (r *reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 	fmt.Println("TESTTT 4444444")
 
+	// workloadAPIAddr := flag.String("workload-api-addr", "", "Workload API Address")
+	// flag.Parse()
+
+	// var opts []workloadapi.ClientOption
+	// if *workloadAPIAddr != "" {
+	// 	opts = append(opts, workloadapi.WithAddr(*workloadAPIAddr))
+	// }
+
+	// fmt.Println("Watching...")
+	// err = workloadapi.WatchX509Context(context.Background(), resource.Watcher{}, opts...)
+	// log.Error(err, "Error: ")
+
 	clientToken, err := vaultClient.AuthenticateToVault(vaultAddr, jwtSVID.Marshal(), "dev")
 	if err != nil {
 		log.Error(err, "Error authenticating to Vault:")

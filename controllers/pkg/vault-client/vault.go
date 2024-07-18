@@ -47,6 +47,8 @@ func AuthenticateToVault(vaultAddr, jwt, role string) (string, error) {
 		return "", fmt.Errorf("unable to create Vault client: %w", err)
 	}
 
+	fmt.Println("VAULT PRINT JWT: ", jwt)
+
 	payload := LoginPayload{
 		Role: role,
 		JWT:  jwt,
@@ -60,11 +62,14 @@ func AuthenticateToVault(vaultAddr, jwt, role string) (string, error) {
 	req := client.NewRequest("POST", "/v1/auth/jwt/login")
 	req.Body = bytes.NewBuffer(payloadBytes)
 
+	fmt.Println("VAULT PRINT REQ:", req)
 	resp, err := client.RawRequest(req)
 	if err != nil {
 		return "", fmt.Errorf("unable to perform login request: %w", err)
 	}
 	defer resp.Body.Close()
+
+	fmt.Println("VAULT PRINT: ", resp)
 
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
@@ -76,7 +81,7 @@ func AuthenticateToVault(vaultAddr, jwt, role string) (string, error) {
 		return "", fmt.Errorf("unable to decode response: %w", err)
 	}
 
-	return authResp.Auth.ClientToken, nil
+	return authResp.Auth.ClientToken, err
 }
 
 func StoreKubeconfig(kubeconfigData corev1.Secret, client *vault.Client, secretPath, clusterName string) error {

@@ -115,8 +115,6 @@ func (r *reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return reconcile.Result{}, err
 	}
 
-	fmt.Println("TESTTT @@@@@@")
-
 	secrets := &v1.SecretList{}
 	if err := r.List(ctx, secrets); err != nil {
 		msg := "cannot list secrets"
@@ -124,16 +122,20 @@ func (r *reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, errors.Wrap(err, msg)
 	}
 
-	fmt.Println("TESTTT 3333333")
+	vaultAddress := types.NamespacedName{Name: "vault-config", Namespace: "default"}
+	vaultconfigMap := &v1.ConfigMap{}
+	err = r.Get(ctx, vaultAddress, vaultconfigMap)
+	if err != nil {
+		log.Error(err, "unable to fetch ConfigMap")
+		return reconcile.Result{}, err
+	}
 
-	vaultAddr := "http://10.146.0.21:8200"
+	vaultAddr := vaultconfigMap.Data["VAULT_ADDR"]
 
 	jwtSVID, err := resource.GetJWT(ctx)
 	if err != nil {
 		log.Error(err, "Unable to get jwtSVID")
 	}
-
-	fmt.Println("TESTTT 4444444")
 
 	// workloadAPIAddr := flag.String("workload-api-addr", "", "Workload API Address")
 	// flag.Parse()
@@ -192,7 +194,11 @@ func (r *reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	Client, err := createK8sClientFromKubeconfig(decodedKubeConfig)
 
 	createK8sSATokenResources(Client)
+	if err != nil {
+		fmt.Println("Error creating K8s", err)
+	}
 
+	err = r.createKubeconfigConfigMap(ctx, Client, cl.Name)
 	if err != nil {
 		fmt.Println("Error creating K8s", err)
 	}
@@ -362,3 +368,76 @@ func createK8sSATokenResources(clientset *kubernetes.Clientset) error {
 
 	return nil
 }
+
+func (r *reconciler) createKubeconfigConfigMap(ctx context.Context, clientset *kubernetes.Clientset, clustername string) error {
+
+	existingConfigMap, err := clientset.CoreV1().ConfigMaps("spire").Get(context.TODO(), "restricted-kubeconfigs", metav1.GetOptions{})
+	if err != nil {
+		// ConfigMap doesn't exist, create a new one
+		existingConfigMap = &v1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "restricted-kubeconfigs",
+				Namespace: "spire",
+			},
+			Data: make(map[string]string),
+		}
+	} else {
+		return fmt.Errorf("failed to get existing ConfigMap: %v", err)
+	}
+
+	// Retrieve the ServiceAccount token
+	secret, err := clientset.CoreV1().Secrets("spire").Get(context.TODO(), "agent-sa-secret", metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get ServiceAccount token: %v", err)
+	}
+	token := string(secret.Data["token"])
+
+	// Retrieve the cluster's CA certificate
+	configMap, err := clientset.CoreV1().ConfigMaps("kube-system").Get(context.TODO(), "kube-root-ca.crt", metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get cluster CA certificate: %v", err)
+	}
+	caCert := configMap.Data["ca.crt"]
+
+	// Create kubeconfig content
+	kubeconfig := fmt.Sprintf(`
+apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    certificate-authority-data: %s
+    server: https://kubernetes.default.svc
+  name: regional
+contexts:
+- context:
+    cluster: regional
+    namespace: spire
+    user: default-user
+  name: default-context
+current-context: default-context
+users:
+- name: default-user
+  user:
+    token: %s
+`, base64.StdEncoding.EncodeToString([]byte(caCert)), token)
+
+	// Generate a unique key for the new kubeconfig
+	newConfigKey := fmt.Sprintf("kubeconfig-%s", clustername)
+
+	// Add the new kubeconfig to the existing ConfigMap
+	if existingConfigMap.Data == nil {
+		existingConfigMap.Data = make(map[string]string)
+	}
+	existingConfigMap.Data[newConfigKey] = kubeconfig
+
+	// _, err = clientset.CoreV1().ConfigMaps("spire").Create(context.TODO(), kubeconfigCM, metav1.CreateOptions{})
+	err = r.Update(ctx, existingConfigMap)
+	if err != nil {
+		return fmt.Errorf("failed to create kubeconfig ConfigMap: %v", err)
+	}
+
+	return nil
+}
+
+// TODO
+// Make Kubeconfig and patch the kubeconfigs configmap

@@ -17,10 +17,12 @@ limitations under the License.
 package spirebootstrap
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
 	"strings"
+	"text/template"
 	"time"
 
 	"github.com/nephio-project/nephio/controllers/pkg/cluster"
@@ -83,16 +85,6 @@ type reconciler struct {
 func (r *reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
 
-	// Fetch the Cluster instance
-
-	// List all Cluster instances
-	// clusterList := &capiv1beta1.ClusterList{}
-	// err := r.List(ctx, clusterList)
-	// if err != nil {
-	// 	log.Error(err, "unable to list Clusters")
-	// 	return reconcile.Result{}, err
-	// }
-
 	cl := &capiv1beta1.Cluster{}
 	err := r.Get(ctx, req.NamespacedName, cl)
 	if err != nil {
@@ -104,7 +96,6 @@ func (r *reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 	// Add your reconciliation logic here
 	log.Info("Reconciling Cluster", "cluster", cl.Name)
-	fmt.Println("TESTTT !!!!!!!!!")
 
 	// Fetch the ConfigMap from the current cluster
 	configMapName := types.NamespacedName{Name: "spire-bundle", Namespace: "spire"}
@@ -137,24 +128,10 @@ func (r *reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		log.Error(err, "Unable to get jwtSVID")
 	}
 
-	// workloadAPIAddr := flag.String("workload-api-addr", "", "Workload API Address")
-	// flag.Parse()
-
-	// var opts []workloadapi.ClientOption
-	// if *workloadAPIAddr != "" {
-	// 	opts = append(opts, workloadapi.WithAddr(*workloadAPIAddr))
-	// }
-
-	// fmt.Println("Watching...")
-	// err = workloadapi.WatchX509Context(context.Background(), resource.Watcher{}, opts...)
-	// log.Error(err, "Error: ")
-
 	clientToken, err := vaultClient.AuthenticateToVault(vaultAddr, jwtSVID.Marshal(), "dev")
 	if err != nil {
 		log.Error(err, "Error authenticating to Vault:")
 	}
-
-	fmt.Println("TESTTT 5555555")
 
 	log.Info("Successfully authenticated to Vault.", "Client token:", clientToken)
 
@@ -173,7 +150,6 @@ func (r *reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		if strings.Contains(secret.GetName(), cl.Name) {
 			secret := secret
 			vaultClient.StoreKubeconfig(secret, client, "secret/my-super-secret", cl.Name)
-			// clusterClient, ok := cluster.Cluster{Client: r.Client}.GetClusterClient(&secret)
 		}
 	}
 
@@ -189,7 +165,7 @@ func (r *reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		fmt.Println("Error decoding base64:", err)
 	}
 
-	log.Info("Secret retrieved:", "Secret", decodedKubeConfig)
+	log.Info("Secret retrieved:", "Secret", string(decodedKubeConfig))
 
 	Client, err := createK8sClientFromKubeconfig(decodedKubeConfig)
 
@@ -198,10 +174,12 @@ func (r *reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		fmt.Println("Error creating K8s", err)
 	}
 
-	err = r.createKubeconfigConfigMap(ctx, Client, cl.Name)
+	kubeconfigCM, err := r.createKubeconfigConfigMap(ctx, Client, cl.Name)
 	if err != nil {
-		fmt.Println("Error creating K8s", err)
+		fmt.Println("Error creating K8s kubeconfig configmap", err)
 	}
+
+	r.Update(ctx, kubeconfigCM)
 
 	for _, secret := range secrets.Items {
 		if strings.Contains(secret.GetName(), cl.Name) {
@@ -369,74 +347,119 @@ func createK8sSATokenResources(clientset *kubernetes.Clientset) error {
 	return nil
 }
 
-func (r *reconciler) createKubeconfigConfigMap(ctx context.Context, clientset *kubernetes.Clientset, clustername string) error {
+func (r *reconciler) createKubeconfigConfigMap(ctx context.Context, clientset *kubernetes.Clientset, clustername string) (*v1.ConfigMap, error) {
 
-	existingConfigMap, err := clientset.CoreV1().ConfigMaps("spire").Get(context.TODO(), "restricted-kubeconfigs", metav1.GetOptions{})
+	cmName := types.NamespacedName{Name: "kubeconfigs", Namespace: "spire"}
+	restrictedKC := &v1.ConfigMap{}
+	err := r.Get(ctx, cmName, restrictedKC)
 	if err != nil {
-		// ConfigMap doesn't exist, create a new one
-		existingConfigMap = &v1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "restricted-kubeconfigs",
-				Namespace: "spire",
-			},
-			Data: make(map[string]string),
-		}
-	} else {
-		return fmt.Errorf("failed to get existing ConfigMap: %v", err)
+		return nil, fmt.Errorf("failed to get existing ConfigMap: %v", err)
 	}
 
 	// Retrieve the ServiceAccount token
 	secret, err := clientset.CoreV1().Secrets("spire").Get(context.TODO(), "agent-sa-secret", metav1.GetOptions{})
 	if err != nil {
-		return fmt.Errorf("failed to get ServiceAccount token: %v", err)
+		return nil, fmt.Errorf("failed to get ServiceAccount token: %v", err)
 	}
 	token := string(secret.Data["token"])
 
 	// Retrieve the cluster's CA certificate
 	configMap, err := clientset.CoreV1().ConfigMaps("kube-system").Get(context.TODO(), "kube-root-ca.crt", metav1.GetOptions{})
 	if err != nil {
-		return fmt.Errorf("failed to get cluster CA certificate: %v", err)
+		return nil, fmt.Errorf("failed to get cluster CA certificate: %v", err)
 	}
 	caCert := configMap.Data["ca.crt"]
 
-	// Create kubeconfig content
-	kubeconfig := fmt.Sprintf(`
+	tmpl := `
+---
 apiVersion: v1
 kind: Config
 clusters:
-- cluster:
-    certificate-authority-data: %s
-    server: https://kubernetes.default.svc
-  name: regional
+  - name: {{.ClusterName}}
+	cluster:
+	  certificate-authority-data: {{.CA}}
+	  server: {{.Server}}
 contexts:
-- context:
-    cluster: regional
-    namespace: spire
-    user: default-user
-  name: default-context
-current-context: default-context
+  - name: {{.ServiceAccount}}@{{.ClusterName}}
+	context:
+	  cluster: {{.ClusterName}}
+	  namespace: {{.Namespace}}
+	  user: {{.ServiceAccount}}
 users:
-- name: default-user
-  user:
-    token: %s
-`, base64.StdEncoding.EncodeToString([]byte(caCert)), token)
+  - name: {{.ServiceAccount}}
+	user:
+	  token: {{.Token}}
+current-context: {{.ServiceAccount}}@{{.ClusterName}}
+`
+
+	// Create a struct to hold the data
+	data := struct {
+		ClusterName    string
+		CA             string
+		Server         string
+		ServiceAccount string
+		Namespace      string
+		Token          string
+	}{
+		ClusterName:    clustername,
+		CA:             caCert,
+		Server:         clientset.RESTClient().Get().URL().String(),
+		ServiceAccount: "spire-kubeconfig",
+		Namespace:      "spire",
+		Token:          token,
+	}
+
+	// Create a new template and parse the template string
+	t, err := template.New("kubeconfig").Parse(tmpl)
+	if err != nil {
+		fmt.Printf("Error parsing template: %v\n", err)
+	}
+
+	// Execute the template with the data
+	var buf bytes.Buffer
+	err = t.Execute(&buf, data)
+	if err != nil {
+		fmt.Printf("Error executing template: %v\n", err)
+	}
+
+	formattedKubeconfig := buf.String()
+
+	// kubeconfig := strings.TrimSpace(fmt.Sprintf(`
+	// apiVersion: v1
+	// kind: Config
+	// clusters:
+	// - cluster:
+	//     certificate-authority-data: %s
+	//     server: %s
+	//   name: regional
+	// contexts:
+	// - context:
+	//     cluster: %s
+	//     namespace: spire
+	//     user: spire-kubeconfig
+	// current-context: spire-kubeconfig@regional
+	// users:
+	// - name: spire-kubeconfig
+	//   user:
+	//     token: %s
+	// `, base64.StdEncoding.EncodeToString([]byte(caCert)), clientset.RESTClient().Get().URL().String(), clustername, token))
 
 	// Generate a unique key for the new kubeconfig
 	newConfigKey := fmt.Sprintf("kubeconfig-%s", clustername)
 
 	// Add the new kubeconfig to the existing ConfigMap
-	if existingConfigMap.Data == nil {
-		existingConfigMap.Data = make(map[string]string)
+	if restrictedKC.Data == nil {
+		restrictedKC.Data = make(map[string]string)
 	}
-	existingConfigMap.Data[newConfigKey] = kubeconfig
+	restrictedKC.Data[newConfigKey] = formattedKubeconfig
 
 	// _, err = clientset.CoreV1().ConfigMaps("spire").Create(context.TODO(), kubeconfigCM, metav1.CreateOptions{})
-	err = r.Update(ctx, existingConfigMap)
+	err = r.Update(ctx, restrictedKC)
 	if err != nil {
-		return fmt.Errorf("failed to create kubeconfig ConfigMap: %v", err)
+		return nil, fmt.Errorf("failed to create kubeconfig ConfigMap: %v", err)
 	}
 
-	return nil
+	return restrictedKC, nil
 }
 
 // TODO

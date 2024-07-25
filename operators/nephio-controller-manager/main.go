@@ -43,6 +43,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	capiv1beta1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	//+kubebuilder:scaffold:imports
@@ -56,6 +57,7 @@ import (
 
 	//_ "github.com/nephio-project/nephio/controllers/pkg/reconcilers/ipam-specializer"
 	_ "github.com/nephio-project/nephio/controllers/pkg/reconcilers/repository"
+	_ "github.com/nephio-project/nephio/controllers/pkg/reconcilers/spire-bootstrap"
 	_ "github.com/nephio-project/nephio/controllers/pkg/reconcilers/token"
 	//_ "github.com/nephio-project/nephio/controllers/pkg/reconcilers/vlan-specializer"
 )
@@ -104,6 +106,13 @@ func main() {
 	err := porchclient.AddToScheme(scheme)
 	if err != nil {
 		setupLog.Error(err, "cannot initializer schema with porch API(s)")
+		//	klog.Errorf("error initializing scheme with Porch APIs: %s", err.Error())
+		os.Exit(1)
+	}
+
+	err = capiv1beta1.AddToScheme(scheme)
+	if err != nil {
+		setupLog.Error(err, "cannot initializer schema with Cluster API(s)")
 		//	klog.Errorf("error initializing scheme with Porch APIs: %s", err.Error())
 		os.Exit(1)
 	}

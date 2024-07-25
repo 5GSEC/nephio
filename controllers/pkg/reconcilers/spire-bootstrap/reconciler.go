@@ -126,6 +126,7 @@ func (r *reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err != nil {
 		log.Error(err, "Unable to get jwtSVID")
 	}
+	fmt.Println("JWTTT: ", jwtSVID)
 
 	clientToken, err := vaultClient.AuthenticateToVault(vaultAddr, jwtSVID.Marshal(), "dev")
 	if err != nil {
@@ -152,8 +153,6 @@ func (r *reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 	}
 
-	// secret, err := getSecret(client, "secret/my-super-secret")
-
 	kubeconfig, err := vaultClient.FetchKubeconfig(client, "secret/my-super-secret", cl.Name)
 	if err != nil {
 		log.Error(err, "Error retrieving secret:")
@@ -164,7 +163,7 @@ func (r *reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		fmt.Println("Error decoding base64:", err)
 	}
 
-	log.Info("Secret retrieved:", "Secret", string(decodedKubeConfig))
+	log.Info("Secret retrieved:", "Secret for cluster", cl.Name)
 
 	Client, err := createK8sClientFromKubeconfig(decodedKubeConfig)
 
@@ -197,10 +196,6 @@ func (r *reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 				}
 
 				remoteNamespace := configMap.Namespace
-				// if rns, ok := configMap.GetAnnotations()[remoteNamespaceKey]; ok {
-				// 	remoteNamespace = rns
-				// }
-				// check if the remote namespace exists, if not retry
 				ns := &v1.Namespace{}
 				if err = clusterClient.Get(ctx, types.NamespacedName{Name: remoteNamespace}, ns); err != nil {
 					if resource.IgnoreNotFound(err) != nil {
@@ -232,7 +227,6 @@ func (r *reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	return reconcile.Result{}, nil
 }
 
-// unused for now
 func createK8sClientFromKubeconfig(kubeconfigData []byte) (*kubernetes.Clientset, error) {
 	// Load the kubeconfig from the decoded data
 	config, err := clientcmd.RESTConfigFromKubeConfig(kubeconfigData)
@@ -249,7 +243,6 @@ func createK8sClientFromKubeconfig(kubeconfigData []byte) (*kubernetes.Clientset
 	return clientset, nil
 }
 
-// unused for now
 func createK8sSATokenResources(clientset *kubernetes.Clientset) error {
 	// Create ServiceAccount
 	sa := &v1.ServiceAccount{
@@ -409,26 +402,6 @@ func (r *reconciler) createKubeconfigConfigMap(ctx context.Context, clientset *k
 		return nil, fmt.Errorf("failed to create kubeconfig ConfigMap: %v", err)
 	}
 
-	// kubeconfig := strings.TrimSpace(fmt.Sprintf(`
-	// apiVersion: v1
-	// kind: Config
-	// clusters:
-	// - cluster:
-	//     certificate-authority-data: %s
-	//     server: %s
-	//   name: regional
-	// contexts:
-	// - context:
-	//     cluster: %s
-	//     namespace: spire
-	//     user: spire-kubeconfig
-	// current-context: spire-kubeconfig@regional
-	// users:
-	// - name: spire-kubeconfig
-	//   user:
-	//     token: %s
-	// `, base64.StdEncoding.EncodeToString([]byte(caCert)), clientset.RESTClient().Get().URL().String(), clustername, token))
-
 	// Generate a unique key for the new kubeconfig
 	newConfigKey := fmt.Sprintf("kubeconfig-%s", clustername)
 
@@ -438,7 +411,6 @@ func (r *reconciler) createKubeconfigConfigMap(ctx context.Context, clientset *k
 	}
 	restrictedKC.Data[newConfigKey] = string(yamlData)
 
-	// _, err = clientset.CoreV1().ConfigMaps("spire").Create(context.TODO(), kubeconfigCM, metav1.CreateOptions{})
 	err = r.Update(ctx, restrictedKC)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create kubeconfig ConfigMap: %v", err)
@@ -446,6 +418,3 @@ func (r *reconciler) createKubeconfigConfigMap(ctx context.Context, clientset *k
 
 	return restrictedKC, nil
 }
-
-// TODO
-// Make Kubeconfig and patch the kubeconfigs configmap

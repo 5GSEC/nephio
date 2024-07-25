@@ -17,18 +17,17 @@ limitations under the License.
 package spirebootstrap
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
 	"strings"
-	"text/template"
 	"time"
 
 	"github.com/nephio-project/nephio/controllers/pkg/cluster"
 	reconcilerinterface "github.com/nephio-project/nephio/controllers/pkg/reconcilers/reconciler-interface"
 	"github.com/nephio-project/nephio/controllers/pkg/resource"
 	vaultClient "github.com/nephio-project/nephio/controllers/pkg/vault-client"
+	"gopkg.in/yaml.v2"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
@@ -369,60 +368,46 @@ func (r *reconciler) createKubeconfigConfigMap(ctx context.Context, clientset *k
 		return nil, fmt.Errorf("failed to get cluster CA certificate: %v", err)
 	}
 	caCert := configMap.Data["ca.crt"]
+	caCertEncoded := strings.TrimSpace(base64.StdEncoding.EncodeToString([]byte(caCert)))
 
-	tmpl := `
----
-apiVersion: v1
-kind: Config
-clusters:
-  - name: {{.ClusterName}}
-	cluster:
-	  certificate-authority-data: {{.CA}}
-	  server: {{.Server}}
-contexts:
-  - name: {{.ServiceAccount}}@{{.ClusterName}}
-	context:
-	  cluster: {{.ClusterName}}
-	  namespace: {{.Namespace}}
-	  user: {{.ServiceAccount}}
-users:
-  - name: {{.ServiceAccount}}
-	user:
-	  token: {{.Token}}
-current-context: {{.ServiceAccount}}@{{.ClusterName}}
-`
-
-	// Create a struct to hold the data
-	data := struct {
-		ClusterName    string
-		CA             string
-		Server         string
-		ServiceAccount string
-		Namespace      string
-		Token          string
-	}{
-		ClusterName:    clustername,
-		CA:             caCert,
-		Server:         clientset.RESTClient().Get().URL().String(),
-		ServiceAccount: "spire-kubeconfig",
-		Namespace:      "spire",
-		Token:          token,
+	config := KubernetesConfig{
+		APIVersion: "v1",
+		Kind:       "Config",
+		Clusters: []Cluster{
+			{
+				Name: clustername,
+				Cluster: ClusterDetail{
+					CertificateAuthorityData: caCertEncoded,
+					Server:                   clientset.RESTClient().Get().URL().String(),
+				},
+			},
+		},
+		Contexts: []Context{
+			{
+				Name: "spire-kubeconfig@" + clustername,
+				Context: ContextDetails{
+					Cluster:   clustername,
+					Namespace: "spire",
+					User:      "spire-kubeconfig",
+				},
+			},
+		},
+		Users: []User{
+			{
+				Name: "spire-kubeconfig",
+				User: UserDetail{
+					Token: token,
+				},
+			},
+		},
+		CurrentContext: "spire-kubeconfig@" + clustername,
 	}
 
-	// Create a new template and parse the template string
-	t, err := template.New("kubeconfig").Parse(tmpl)
+	// Convert to YAML
+	yamlData, err := yaml.Marshal(&config)
 	if err != nil {
-		fmt.Printf("Error parsing template: %v\n", err)
+		return nil, fmt.Errorf("failed to create kubeconfig ConfigMap: %v", err)
 	}
-
-	// Execute the template with the data
-	var buf bytes.Buffer
-	err = t.Execute(&buf, data)
-	if err != nil {
-		fmt.Printf("Error executing template: %v\n", err)
-	}
-
-	formattedKubeconfig := buf.String()
 
 	// kubeconfig := strings.TrimSpace(fmt.Sprintf(`
 	// apiVersion: v1
@@ -451,7 +436,7 @@ current-context: {{.ServiceAccount}}@{{.ClusterName}}
 	if restrictedKC.Data == nil {
 		restrictedKC.Data = make(map[string]string)
 	}
-	restrictedKC.Data[newConfigKey] = formattedKubeconfig
+	restrictedKC.Data[newConfigKey] = string(yamlData)
 
 	// _, err = clientset.CoreV1().ConfigMaps("spire").Create(context.TODO(), kubeconfigCM, metav1.CreateOptions{})
 	err = r.Update(ctx, restrictedKC)

@@ -179,6 +179,11 @@ func (r *reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 	r.Update(ctx, kubeconfigCM)
 
+	err = updateClusterListConfigMap(Client, cl.Name)
+	if err != nil {
+		fmt.Println("Cluster list could not be updated...: ", err)
+	}
+
 	for _, secret := range secrets.Items {
 		if strings.Contains(secret.GetName(), cl.Name) {
 			secret := secret // required to prevent gosec warning: G601 (CWE-118): Implicit memory aliasing in for loop
@@ -417,4 +422,45 @@ func (r *reconciler) createKubeconfigConfigMap(ctx context.Context, clientset *k
 	}
 
 	return restrictedKC, nil
+}
+
+func updateClusterListConfigMap(clientset *kubernetes.Clientset, clusterName string) error {
+
+	// Get the ConfigMap
+	cm, err := clientset.CoreV1().ConfigMaps("spire").Get(context.TODO(), "clusters", metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("error getting ConfigMap: %v", err)
+	}
+
+	// Get the clusters.conf data
+	clustersConf, ok := cm.Data["clusters.conf"]
+	if !ok {
+		return fmt.Errorf("clusters.conf not found in ConfigMap")
+	}
+
+	// Add new cluster
+	newCluster := fmt.Sprintf(`
+      "%s" = {
+         service_account_allow_list = ["spire:spire-agent"]
+         kube_config_file = "/run/spire/kubeconfigs/kubeconfig-%s"
+      }`, clusterName, clusterName)
+
+	// Insert the new cluster before the last closing brace
+	lastBraceIndex := strings.LastIndex(clustersConf, "}")
+	if lastBraceIndex != -1 {
+		clustersConf = clustersConf[:lastBraceIndex] + newCluster + clustersConf[lastBraceIndex:]
+	} else {
+		return fmt.Errorf("invalid clusters.conf format")
+	}
+
+	// Update the ConfigMap
+	cm.Data["clusters.conf"] = clustersConf
+
+	// Apply the changes
+	_, err = clientset.CoreV1().ConfigMaps("spire").Update(context.TODO(), cm, metav1.UpdateOptions{})
+	if err != nil {
+		return fmt.Errorf("error updating ConfigMap: %v", err)
+	}
+
+	return nil
 }

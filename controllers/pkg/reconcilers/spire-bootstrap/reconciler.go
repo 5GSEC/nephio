@@ -149,6 +149,7 @@ func (r *reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	for _, secret := range secrets.Items {
 		if strings.Contains(secret.GetName(), cl.Name) {
 			secret := secret
+			fmt.Println("TESTING IFFFFFFF")
 			vaultClient.StoreKubeconfig(secret, client, "secret/kubeconfigs"+cl.Name, cl.Name)
 		}
 	}

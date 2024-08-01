@@ -95,6 +95,8 @@ func StoreKubeconfig(kubeconfigData corev1.Secret, client *vault.Client, secretP
 		return fmt.Errorf("unable to write secret to Vault: %w", err)
 	}
 
+	fmt.Println("VAULT STORE TESTTTTT")
+
 	return nil
 }
 

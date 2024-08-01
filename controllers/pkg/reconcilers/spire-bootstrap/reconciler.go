@@ -149,7 +149,8 @@ func (r *reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	for _, secret := range secrets.Items {
 		if strings.Contains(secret.GetName(), cl.Name) {
 			secret := secret
-			vaultClient.StoreKubeconfig(secret, client, "secret/kubeconfigs", cl.Name)
+			fmt.Println("TESTING IFFFFFFF")
+			vaultClient.StoreKubeconfig(ctx, secret, client, "/kubeconfigs"+cl.Name, cl.Name)
 		}
 	}
 
@@ -182,6 +183,32 @@ func (r *reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	err = updateClusterListConfigMap(Client, cl.Name)
 	if err != nil {
 		fmt.Println("Cluster list could not be updated...: ", err)
+	}
+
+	// Get the spire-server service
+	spireService := &v1.Service{}
+	err = r.Get(ctx, types.NamespacedName{Name: "spire-server", Namespace: "spire"}, spireService)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to get spire-server service: %v", err)
+	}
+
+	// Get the ClusterIP
+	clusterIP := spireService.Spec.ClusterIP
+
+	// Get the port
+	var port string
+	if len(spireService.Spec.Ports) > 0 {
+		port = fmt.Sprint(spireService.Spec.Ports[0].Port)
+	}
+
+	// Construct the service address
+	serviceAddress := fmt.Sprintf("%s:%s", clusterIP, port)
+
+	fmt.Printf("SPIRE Server service address: %s\n", serviceAddress)
+
+	spireAgentCM, err := createSpireAgentConfigMap(Client, "spire-agent", "spire", cl.Name, serviceAddress, port)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to get spireAgent ConfigMap: %v", err)
 	}
 
 	for _, secret := range secrets.Items {
@@ -218,9 +245,20 @@ func (r *reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 				newcr.ResourceVersion = ""
 				newcr.UID = ""
 				newcr.Namespace = remoteNamespace
+
+				newAgentConf := spireAgentCM.DeepCopy()
+				newAgentConf.ResourceVersion = ""
+				newAgentConf.UID = ""
+				newAgentConf.Namespace = remoteNamespace
 				log.Info("secret info", "secret", newcr.Annotations)
+				log.Info("configMap info", "configMap", newAgentConf.Annotations)
 				if err := clusterClient.Apply(ctx, newcr); err != nil {
 					msg := fmt.Sprintf("cannot apply secret to cluster %s", cl.Name)
+					log.Error(err, msg)
+					return ctrl.Result{}, errors.Wrap(err, msg)
+				}
+				if err := clusterClient.Apply(ctx, newAgentConf); err != nil {
+					msg := fmt.Sprintf("cannot apply ConfigMap to cluster %s", cl.Name)
 					log.Error(err, msg)
 					return ctrl.Result{}, errors.Wrap(err, msg)
 				}
@@ -463,4 +501,54 @@ func updateClusterListConfigMap(clientset *kubernetes.Clientset, clusterName str
 	}
 
 	return nil
+}
+
+func createSpireAgentConfigMap(clientset *kubernetes.Clientset, name string, namespace string, cluster string, serverAddress string, serverPort string) (*v1.ConfigMap, error) {
+	configMapData := map[string]string{
+		"agent.conf": `
+agent {
+  data_dir = "/run/spire"
+  log_level = "DEBUG"
+  server_address = "` + serverAddress + `"
+  server_port = "` + serverPort + `"
+  socket_path = "/run/spire/sockets/spire-agent.sock"
+  trust_bundle_path = "/run/spire/bundle/bundle.crt"
+  trust_domain = "example.org"
+}
+
+plugins {
+  NodeAttestor "k8s_psat" {
+    plugin_data {
+      cluster = "` + cluster + `"
+    }
+  }
+
+  KeyManager "memory" {
+    plugin_data {
+    }
+  }
+
+  WorkloadAttestor "k8s" {
+    plugin_data {
+      skip_kubelet_verification = true
+    }
+  }
+}
+`,
+	}
+
+	configMap := &v1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Data: configMapData,
+	}
+
+	// createdConfigMap, err := clientset.CoreV1().ConfigMaps(namespace).Create(context.TODO(), configMap, metav1.CreateOptions{})
+	// if err != nil {
+	// 	return nil, err
+	// }
+
+	return configMap, nil
 }

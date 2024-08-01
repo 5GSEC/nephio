@@ -18,6 +18,7 @@ package vaultClient
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -79,7 +80,7 @@ func AuthenticateToVault(vaultAddr, jwt, role string) (string, error) {
 	return authResp.Auth.ClientToken, err
 }
 
-func StoreKubeconfig(kubeconfigData corev1.Secret, client *vault.Client, secretPath, clusterName string) error {
+func StoreKubeconfig(ctx context.Context, kubeconfigData corev1.Secret, client *vault.Client, secretPath, clusterName string) error {
 	// Read the Kubeconfig file
 
 	// Prepare the data to store
@@ -90,7 +91,7 @@ func StoreKubeconfig(kubeconfigData corev1.Secret, client *vault.Client, secretP
 	}
 
 	// Store the data in Vault
-	_, err := client.Logical().Write(secretPath, data)
+	_, err := client.KVv2("secret").Put(ctx, "kubeconfigs"+clusterName, data)
 	if err != nil {
 		return fmt.Errorf("unable to write secret to Vault: %w", err)
 	}

@@ -1,4 +1,4 @@
-module github.com/nephio-project/nephio/controllers/pkg
+module github.com/5gsec/nephio/controllers/pkg
 
 go 1.22
 

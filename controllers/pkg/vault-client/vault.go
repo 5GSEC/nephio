@@ -18,6 +18,7 @@ package vaultClient
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -47,8 +48,6 @@ func AuthenticateToVault(vaultAddr, jwt, role string) (string, error) {
 		return "", fmt.Errorf("unable to create Vault client: %w", err)
 	}
 
-	fmt.Println("VAULT PRINT JWT: ", jwt)
-
 	payload := LoginPayload{
 		Role: role,
 		JWT:  jwt,
@@ -62,14 +61,11 @@ func AuthenticateToVault(vaultAddr, jwt, role string) (string, error) {
 	req := client.NewRequest("POST", "/v1/auth/jwt/login")
 	req.Body = bytes.NewBuffer(payloadBytes)
 
-	fmt.Println("VAULT PRINT REQ:", req)
 	resp, err := client.RawRequest(req)
 	if err != nil {
 		return "", fmt.Errorf("unable to perform login request: %w", err)
 	}
 	defer resp.Body.Close()
-
-	fmt.Println("VAULT PRINT: ", resp)
 
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
@@ -84,7 +80,7 @@ func AuthenticateToVault(vaultAddr, jwt, role string) (string, error) {
 	return authResp.Auth.ClientToken, err
 }
 
-func StoreKubeconfig(kubeconfigData corev1.Secret, client *vault.Client, secretPath, clusterName string) error {
+func StoreKubeconfig(ctx context.Context, kubeconfigData corev1.Secret, client *vault.Client, secretPath, clusterName string) error {
 	// Read the Kubeconfig file
 
 	// Prepare the data to store
@@ -95,10 +91,12 @@ func StoreKubeconfig(kubeconfigData corev1.Secret, client *vault.Client, secretP
 	}
 
 	// Store the data in Vault
-	_, err := client.Logical().Write(secretPath, data)
+	_, err := client.KVv2("secret").Put(ctx, "kubeconfigs"+clusterName, data)
 	if err != nil {
 		return fmt.Errorf("unable to write secret to Vault: %w", err)
 	}
+
+	fmt.Println("VAULT STORE TESTTTTT")
 
 	return nil
 }
@@ -115,7 +113,7 @@ func FetchKubeconfig(client *vault.Client, secretPath, clusterName string) (stri
 	}
 
 	// Extract the Kubeconfig data
-	kubeconfig, ok := secret.Data["test"].(string)
+	kubeconfig, ok := secret.Data[clusterName].(string)
 	if !ok {
 		return "", fmt.Errorf("kubeconfig for cluster %s not found", clusterName)
 	}

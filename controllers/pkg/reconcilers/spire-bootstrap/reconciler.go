@@ -150,11 +150,11 @@ func (r *reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		if strings.Contains(secret.GetName(), cl.Name) {
 			secret := secret
 			fmt.Println("TESTING IFFFFFFF")
-			vaultClient.StoreKubeconfig(ctx, secret, client, "/kubeconfigs"+cl.Name, cl.Name)
+			vaultClient.StoreKubeconfig(ctx, secret, client, "/kubeconfigs/"+cl.Name, cl.Name)
 		}
 	}
 
-	kubeconfig, err := vaultClient.FetchKubeconfig(client, "secret/kubeconfigs", cl.Name)
+	kubeconfig, err := vaultClient.FetchKubeconfig(client, "secret/kubeconfigs/"+cl.Name, cl.Name)
 	if err != nil {
 		log.Error(err, "Error retrieving secret:")
 	}

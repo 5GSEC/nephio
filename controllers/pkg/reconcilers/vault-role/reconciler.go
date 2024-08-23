@@ -24,6 +24,7 @@ type VaultJWTRoleReconciler struct {
 
 func (r *VaultJWTRoleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
+		Named("VaultController").
 		For(&vaultClient.VaultJWTRole{}).
 		Complete(r)
 }

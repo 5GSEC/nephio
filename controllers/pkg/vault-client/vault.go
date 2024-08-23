@@ -24,6 +24,8 @@ import (
 	"io/ioutil"
 
 	vault "github.com/hashicorp/vault/api"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 
 	corev1 "k8s.io/api/core/v1"
 )
@@ -119,4 +121,133 @@ func FetchKubeconfig(client *vault.Client, secretPath, clusterName string) (stri
 	}
 
 	return kubeconfig, nil
+}
+
+// VaultJWTRoleSpec defines the desired state of VaultJWTRole
+type VaultJWTRoleSpec struct {
+	RoleType       string   `json:"roleType"`
+	UserClaim      string   `json:"userClaim"`
+	BoundAudiences []string `json:"boundAudiences"`
+	BoundSubject   string   `json:"boundSubject"`
+	TokenTtl       string   `json:"tokenTtl"`
+	TokenPolicies  []string `json:"tokenPolicies"`
+}
+
+// VaultJWTRoleStatus defines the observed state of VaultJWTRole
+type VaultJWTRoleStatus struct {
+	Conditions []VaultJWTRoleCondition `json:"conditions,omitempty"`
+}
+
+// VaultJWTRoleCondition defines the condition of VaultJWTRole
+type VaultJWTRoleCondition struct {
+	Type    string `json:"type"`
+	Status  string `json:"status"`
+	Reason  string `json:"reason,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+//+kubebuilder:object:root=true
+//+kubebuilder:subresource:status
+
+// VaultJWTRole is the Schema for the vaultjwtroles API
+type VaultJWTRole struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec   VaultJWTRoleSpec   `json:"spec,omitempty"`
+	Status VaultJWTRoleStatus `json:"status,omitempty"`
+}
+
+//+kubebuilder:object:root=true
+
+// VaultJWTRoleList contains a list of VaultJWTRole
+type VaultJWTRoleList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []VaultJWTRole `json:"items"`
+}
+
+// DeepCopyInto copies all properties of this object into another object of the same type
+func (in *VaultJWTRole) DeepCopyInto(out *VaultJWTRole) {
+	*out = *in
+	out.TypeMeta = in.TypeMeta
+	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
+	in.Spec.DeepCopyInto(&out.Spec)
+	// If you have a Status field, uncomment the following line
+	// in.Status.DeepCopyInto(&out.Status)
+}
+
+// DeepCopy creates a deep copy of a VaultJWTRole
+func (in *VaultJWTRole) DeepCopy() *VaultJWTRole {
+	if in == nil {
+		return nil
+	}
+	out := new(VaultJWTRole)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// DeepCopyObject returns a generically typed copy of an object
+func (in *VaultJWTRole) DeepCopyObject() runtime.Object {
+	if c := in.DeepCopy(); c != nil {
+		return c
+	}
+	return nil
+}
+
+// DeepCopyInto copies all properties of this object into another object of the same type
+func (in *VaultJWTRoleSpec) DeepCopyInto(out *VaultJWTRoleSpec) {
+	*out = *in
+	if in.BoundAudiences != nil {
+		in, out := &in.BoundAudiences, &out.BoundAudiences
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	if in.TokenPolicies != nil {
+		in, out := &in.TokenPolicies, &out.TokenPolicies
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+}
+
+// DeepCopy creates a deep copy of a VaultJWTRoleSpec
+func (in *VaultJWTRoleSpec) DeepCopy() *VaultJWTRoleSpec {
+	if in == nil {
+		return nil
+	}
+	out := new(VaultJWTRoleSpec)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// DeepCopyInto copies all properties of this object into another object of the same type
+func (in *VaultJWTRoleList) DeepCopyInto(out *VaultJWTRoleList) {
+	*out = *in
+	out.TypeMeta = in.TypeMeta
+	in.ListMeta.DeepCopyInto(&out.ListMeta)
+	if in.Items != nil {
+		in, out := &in.Items, &out.Items
+		*out = make([]VaultJWTRole, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
+}
+
+// DeepCopy creates a deep copy of a VaultJWTRoleList
+func (in *VaultJWTRoleList) DeepCopy() *VaultJWTRoleList {
+	if in == nil {
+		return nil
+	}
+	out := new(VaultJWTRoleList)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// DeepCopyObject returns a generically typed copy of an object
+func (in *VaultJWTRoleList) DeepCopyObject() runtime.Object {
+	if c := in.DeepCopy(); c != nil {
+		return c
+	}
+	return nil
 }

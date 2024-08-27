@@ -6,33 +6,44 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	reconcilerinterface "github.com/nephio-project/nephio/controllers/pkg/reconcilers/reconciler-interface"
 	vaultClient "github.com/nephio-project/nephio/controllers/pkg/vault-client"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	vaultapi "github.com/hashicorp/vault/api"
 )
 
-// VaultJWTRoleReconciler reconciles a VaultJWTRole object
-type VaultJWTRoleReconciler struct {
+func init() {
+	reconcilerinterface.Register("vaultcontroller", &reconciler{})
+}
+
+// reconciler reconciles a VaultJWTRole object
+type reconciler struct {
 	client.Client
 	Log    logr.Logger
 	Scheme *runtime.Scheme
 	Vault  *vaultapi.Client
 }
 
-func (r *VaultJWTRoleReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+func (r *reconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager, c any) (map[schema.GroupVersionKind]chan event.GenericEvent, error) {
+
+	r.Client = mgr.GetClient()
+
+	return nil, ctrl.NewControllerManagedBy(mgr).
 		Named("VaultController").
 		For(&vaultClient.VaultJWTRole{}).
 		Complete(r)
+
 }
 
 // +kubebuilder:rbac:groups=vault.example.com,resources=vaultjwtroles,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=vault.example.com,resources=vaultjwtroles/status,verbs=get;update;patch
 
-func (r *VaultJWTRoleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 
 	fmt.Println("WOOH TEST")
 	log := r.Log.WithValues("vaultjwtrole", req.NamespacedName)

@@ -321,7 +321,7 @@ func (r *reconciler) updateClusterListConfigMap(ctx context.Context, clusterName
 	clustersConf, exists := cm.Data["clusters.conf"]
 	if !exists {
 		// Initialize empty configuration if not exists
-		clustersConf = "clusters = {}"
+		clustersConf = "clusters = {}\n"
 	}
 
 	// Remove any initial pipe character and whitespace

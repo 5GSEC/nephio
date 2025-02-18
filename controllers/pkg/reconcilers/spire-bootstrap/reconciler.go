@@ -23,9 +23,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/nephio-project/nephio/controllers/pkg/cluster"
 	reconcilerinterface "github.com/nephio-project/nephio/controllers/pkg/reconcilers/reconciler-interface"
 	"github.com/nephio-project/nephio/controllers/pkg/resource"
+	"github.com/zclconf/go-cty/cty"
 	"gopkg.in/yaml.v2"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -301,7 +304,6 @@ func (r *reconciler) createKubeconfigConfigMap(ctx context.Context, clientset *k
 
 func (r *reconciler) updateClusterListConfigMap(ctx context.Context, clusterName string) error {
 	log := log.FromContext(ctx)
-
 	log.Info("Updating Cluster List...", "ClusterName", clusterName)
 
 	// Get the ConfigMap
@@ -310,50 +312,76 @@ func (r *reconciler) updateClusterListConfigMap(ctx context.Context, clusterName
 		Namespace: "spire",
 		Name:      "clusters",
 	}, cm); err != nil {
-		msg := "failed to create kubeconfig CM"
+		msg := "failed to get clusters ConfigMap"
 		log.Error(err, msg)
 		return errors.Wrap(err, msg)
 	}
 
 	// Get the clusters.conf data
-	clustersConf, ok := cm.Data["clusters.conf"]
-	if !ok {
-		// Initialize with basic structure if not exists
-		clustersConf = "clusters = {\n}"
+	clustersConf, exists := cm.Data["clusters.conf"]
+	if !exists {
+		// Initialize empty configuration if not exists
+		clustersConf = "clusters = {}"
 	}
 
-	// Remove any initial whitespace if present
+	// Remove any initial pipe character and whitespace
 	clustersConf = strings.TrimPrefix(clustersConf, "|")
 	clustersConf = strings.TrimSpace(clustersConf)
 
+	// Parse existing HCL
+	file, diags := hclwrite.ParseConfig([]byte(clustersConf), "clusters.conf", hcl.Pos{Line: 1, Column: 1})
+	if diags.HasErrors() {
+		return fmt.Errorf("failed to parse HCL: %s", diags.Error())
+	}
+
+	// Get or create clusters block
+	rootBody := file.Body()
+	var clustersBlock *hclwrite.Block
+
+	// Look for existing clusters block
+	for _, block := range rootBody.Blocks() {
+		if block.Type() == "clusters" {
+			clustersBlock = block
+			break
+		}
+	}
+
+	// Create new clusters block if it doesn't exist
+	if clustersBlock == nil {
+		clustersBlock = rootBody.AppendNewBlock("clusters", nil)
+	}
+
 	// Check if cluster already exists
-	if strings.Contains(clustersConf, fmt.Sprintf(`"%s"`, clusterName)) {
-		return nil
+	clusterExists := false
+	clustersBody := clustersBlock.Body()
+	for _, block := range clustersBody.Blocks() {
+		if block.Type() == clusterName {
+			clusterExists = true
+			break
+		}
 	}
 
-	// Add new cluster with proper indentation
-	newCluster := fmt.Sprintf(`      "%s" = {
-        service_account_allow_list = ["spire:spire-agent"]
-        kube_config_file = "/run/spire/kubeconfigs/kubeconfig-%s"
-      }`, clusterName, clusterName)
+	if !clusterExists {
+		// Add new cluster
+		clusterBlock := clustersBody.AppendNewBlock(clusterName, nil)
+		clusterBody := clusterBlock.Body()
 
-	// Insert the new cluster before the last closing brace
-	lastBraceIndex := strings.LastIndex(clustersConf, "}")
-	if lastBraceIndex != -1 {
-		clustersConf = clustersConf[:lastBraceIndex] + newCluster + "\n" + clustersConf[lastBraceIndex:]
-	} else {
-		return fmt.Errorf("invalid clusters.conf format")
+		// Set cluster attributes
+		clusterBody.SetAttributeValue("service_account_allow_list",
+			cty.ListVal([]cty.Value{cty.StringVal("spire:spire-agent")}))
+		clusterBody.SetAttributeValue("kube_config_file",
+			cty.StringVal(fmt.Sprintf("/run/spire/kubeconfigs/kubeconfig-%s", clusterName)))
 	}
 
-	// Format the final content with pipe operator and proper indentation
-	formattedConf := "|\n    " + strings.Replace(clustersConf, "\n", "\n    ", -1)
+	// Format the configuration
+	newConfig := string(file.Bytes())
+	formattedConf := "|\n    " + strings.Replace(newConfig, "\n", "\n    ", -1)
 
 	// Update the ConfigMap
 	cm.Data = map[string]string{
 		"clusters.conf": formattedConf,
 	}
 
-	// Apply the changes
 	if err := r.Update(ctx, cm); err != nil {
 		msg := "error updating Cluster List ConfigMap"
 		log.Error(err, msg)
@@ -361,6 +389,5 @@ func (r *reconciler) updateClusterListConfigMap(ctx context.Context, clusterName
 	}
 
 	log.Info("Cluster added to the Cluster List", "clusterName", clusterName)
-
 	return nil
 }
